@@ -34,6 +34,8 @@ let isLoadingReportData = true;
 // Without this, a stale persisted `false` from a previous session would
 // resolve the onServerDataReady() promise before OpenApp/ReconnectApp completes.
 let hasStartedLoading = false;
+// openApp short-circuits under imported state without ever setting IS_LOADING_REPORT_DATA.
+let isUsingImportedState = false;
 
 let resolveIsReadyPromise: (value?: Promise<void>) => void | undefined;
 let isServerDataReadyPromise = new Promise<void>((resolve) => {
@@ -42,6 +44,21 @@ let isServerDataReadyPromise = new Promise<void>((resolve) => {
 
 function onServerDataReady(): Promise<void> {
     return isServerDataReadyPromise;
+}
+
+/**
+ * Synchronous counterpart of onServerDataReady(), for callers that must return a decision in the
+ * same tick and so cannot await - a navigation guard, for instance.
+ *
+ * `hasStartedLoading` is what makes this safe on a returning session: a stale persisted `false`
+ * from the previous session cannot satisfy it. Imported state is the one exception - openApp
+ * short-circuits there and never sets IS_LOADING_REPORT_DATA, so readiness would never arrive.
+ */
+function isServerDataReady(): boolean {
+    if (isUsingImportedState) {
+        return true;
+    }
+    return hasStartedLoading && !isLoadingReportData;
 }
 
 /**
@@ -237,6 +254,13 @@ function clearOnboardingMergeAccountBlocked() {
     clearWorkEmailFormErrors();
 }
 
+Onyx.connectWithoutView({
+    key: ONYXKEYS.IS_USING_IMPORTED_STATE,
+    callback: (value) => {
+        isUsingImportedState = value ?? false;
+    },
+});
+
 // We use `connectWithoutView` here since this connection only to get loading flag
 // and doesn't need to trigger component re-renders.
 Onyx.connectWithoutView({
@@ -308,6 +332,7 @@ function dismissProductTraining(elementName: string, isDismissedUsingCloseButton
 
 export {
     onServerDataReady,
+    isServerDataReady,
     dismissProductTraining,
     setOnboardingPurposeSelected,
     updateOnboardingLastVisitedPath,

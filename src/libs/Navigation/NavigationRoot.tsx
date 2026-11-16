@@ -180,7 +180,15 @@ function NavigationRoot({authenticated, lastVisitedPath, initialUrl, onReady}: N
             const isRootPath = !path || path === '' || path === '/';
             const isSpecificDeepLink = path && !isRootPath;
 
-            if (!isSpecificDeepLink) {
+            // A restored initial state skips OnboardingGuard (see the comment on shouldRedirectCompletedUser
+            // above), so an abandoned onboarding step would be reopened with no membership check - and
+            // membership cannot be read here at all, because this initializer runs once, synchronously,
+            // before OpenApp/ReconnectApp answers. Nothing is lost: startOnboardingFlow resumes the flow
+            // from ONBOARDING_LAST_VISITED_PATH, which parseAndLogRoute keeps writing separately.
+            // Join-workspace Concierge task steps are excluded, since those are steps the user returns to.
+            const isStaleOnboardingPath = isOnboardingPath(lastVisitedPath) && !isJoinWorkspaceTaskPath(lastVisitedPath);
+
+            if (!isSpecificDeepLink && !isStaleOnboardingPath) {
                 Log.info('Restoring last visited path on app startup', false, {lastVisitedPath, initialUrl, path});
                 return getAdaptedStateFromPath(lastVisitedPath);
             }

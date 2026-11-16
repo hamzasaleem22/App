@@ -504,6 +504,35 @@ const hasOnlyPersonalPoliciesSelector = (policies: OnyxCollection<Policy>): bool
 };
 
 /**
+ * Whether the account holds a seat in a workspace that onboarding did not put it in.
+ *
+ * HAS_NON_PERSONAL_POLICY cannot answer this on a returning session: it has no client-side writer, so
+ * only OpenApp delivers it. A reopen sends ReconnectApp, which merges an invited workspace into the
+ * policy collection without refreshing the flag. This reads the membership itself instead.
+ *
+ * `role` is only set for workspaces the account holds a seat in, which keeps out the policy snapshots
+ * that arrive for shared rooms. An admin who also owns the workspace is not counted, because the
+ * backend creates exactly that - a group workspace owned and administered by the signing-up user -
+ * for OldDot signups while onboarding is still pending.
+ *
+ * `onboardingPolicyID` is excluded because the onboarding "join a workspace" step can join a workspace
+ * owned by someone else *before* onboarding finishes. Counting it would switch enforcement off mid-flow
+ * and leave that user with hasCompletedGuidedSetupFlow never set and no way back in.
+ */
+const createIsInvitedPolicyMemberSelector =
+    (currentUserAccountID: number | undefined, onboardingPolicyID?: string) =>
+    (policies: OnyxCollection<Policy>): boolean =>
+        Object.values(policies ?? {}).some((policy) => {
+            if (!policy || policy.type === CONST.POLICY.TYPE.PERSONAL || !policy.role || isArchivedOrPendingDeletePolicy(policy) || !!policy.isJoinRequestPending) {
+                return false;
+            }
+            if (!!onboardingPolicyID && policy.id === onboardingPolicyID) {
+                return false;
+            }
+            return policy.role !== CONST.POLICY.ROLE.ADMIN || (!!policy.ownerAccountID && !!currentUserAccountID && policy.ownerAccountID !== currentUserAccountID);
+        });
+
+/**
  * Returns the name of a workspace the member belongs to that calculates commuter exclusions from the member's
  * home address, so the private home address row can name the workspace relying on it.
  */
@@ -722,6 +751,7 @@ export {
     hasReusablePoliciesConnectedToSelector,
     lastWorkspaceNumberSelector,
     hasOnlyPersonalPoliciesSelector,
+    createIsInvitedPolicyMemberSelector,
     homeAndOfficeCommuterExclusionPolicyNameSelector,
     policyAvatarFieldsSelector,
     policyNameSelector,

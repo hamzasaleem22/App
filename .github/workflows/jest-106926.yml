@@ -46,3 +46,18 @@ jobs:
 
       - name: Jest
         run: npx jest --ci --verbose --runInBand tests/unit/NavigationRootInitialStateTest.tsx tests/unit/Navigation/guards/OnboardingGuard.test.ts
+
+      # These are upstream's own suites, untouched. They cover the two guards that would be switched
+      # off for every returning session if the readiness wait had been added to the shared
+      # context.isLoading instead of kept inside OnboardingGuard, plus the deep-link rule that says an
+      # open onboarding flow keeps control until it finishes.
+      - name: Adjacent suites that must not break
+        if: ${{ always() }}
+        run: |
+          npx jest --ci --verbose --runInBand \
+            tests/unit/Navigation/guards/MigratedUserWelcomeModalGuard.test.ts \
+            tests/unit/Navigation/guards/SubmitPlanWelcomeModalGuard.test.ts \
+            tests/unit/Navigation/guards/NavigationGuards.test.ts \
+            tests/unit/Navigation/guards/handleNavigationGuardBlock.test.ts \
+            tests/unit/Navigation/guards/handleNavigationGuardRedirect.test.ts \
+            tests/unit/LinkOpenReportFromDeepLinkTest.ts
