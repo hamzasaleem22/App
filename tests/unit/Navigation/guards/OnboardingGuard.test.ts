@@ -6,6 +6,7 @@ import NAVIGATORS from '@src/NAVIGATORS';
 import ONYXKEYS from '@src/ONYXKEYS';
 import ROUTES from '@src/ROUTES';
 import SCREENS from '@src/SCREENS';
+import type {Policy} from '@src/types/onyx';
 
 import type {NavigationAction, NavigationState} from '@react-navigation/native';
 
@@ -1096,6 +1097,171 @@ describe('OnboardingGuard', () => {
             const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
 
             expect(result.type).toBe('ALLOW');
+        });
+    });
+
+    // #106926: an account invited to a workspace while the app was closed is pushed back into the
+    // onboarding it had abandoned. Two things make that happen, and both are exercised here:
+    //   1. the onboarding decision is taken from the previous session's cache, because a reopen sends
+    //      ReconnectApp, which does not refresh HAS_NON_PERSONAL_POLICY (it has no client-side writer),
+    //      and the optimistic IS_LOADING_APP that both gates read is pushed only `if (isOpenApp)`;
+    //   2. the membership that *is* in Onyx - the policy itself, with a role - is never consulted.
+    describe('invited workspace member on a returning session (#106926)', () => {
+        const CURRENT_ACCOUNT_ID = 1;
+        const OTHER_ACCOUNT_ID = 2;
+        const INVITED_POLICY_ID = 'CB9EB702A1799D77';
+
+        /** A returning session: HAS_LOADED_APP is persisted true, so this is a ReconnectApp reopen, not a first run. */
+        const givenReturningSession = async () => {
+            await Onyx.merge(ONYXKEYS.NVP_ONBOARDING, {hasCompletedGuidedSetupFlow: false});
+            await Onyx.merge(ONYXKEYS.ACCOUNT, {isFromPublicDomain: true});
+            await Onyx.merge(ONYXKEYS.SESSION, {accountID: CURRENT_ACCOUNT_ID, email: 'invitee@gmail.com'});
+            await Onyx.merge(ONYXKEYS.HAS_LOADED_APP, true);
+            await waitForBatchedUpdates();
+        };
+
+        // The readiness latch in @libs/actions/Welcome only resolves once loading has STARTED in this
+        // session, so both states are driven explicitly rather than relying on whatever a previous test left.
+        const givenInitialSyncPending = async () => {
+            await Onyx.merge(ONYXKEYS.IS_LOADING_REPORT_DATA, true);
+            await waitForBatchedUpdates();
+        };
+
+        const givenInitialSyncSettled = async () => {
+            await Onyx.merge(ONYXKEYS.IS_LOADING_REPORT_DATA, true);
+            await waitForBatchedUpdates();
+            await Onyx.merge(ONYXKEYS.IS_LOADING_REPORT_DATA, false);
+            await waitForBatchedUpdates();
+        };
+
+        const givenPolicy = async (policy: Pick<Policy, 'role' | 'ownerAccountID' | 'type'> & {id?: string}) => {
+            await Onyx.merge(`${ONYXKEYS.COLLECTION.POLICY}${policy.id ?? INVITED_POLICY_ID}`, {
+                id: policy.id ?? INVITED_POLICY_ID,
+                name: 'Workspace',
+                type: policy.type,
+                role: policy.role,
+                ownerAccountID: policy.ownerAccountID,
+            });
+            await waitForBatchedUpdates();
+        };
+
+        it('allows a startup action while a returning session is still syncing', async () => {
+            // Given a returning session whose first sync is still in flight, so the invitation that would
+            // exempt this account cannot possibly be known yet
+            await givenReturningSession();
+            await givenInitialSyncPending();
+
+            // When a startup-dispatched action is evaluated
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then it is allowed, because deciding now means deciding on pre-invite cache and there is
+            // no way back out of onboarding once it opens
+            expect(result.type).toBe('ALLOW');
+        });
+
+        it('counts a workspace the account was invited to even while hasNonPersonalPolicy is still false', async () => {
+            // Given the measured staging state: the invited workspace is in Onyx with a role, while the
+            // server flag both readers consult is still the false the previous session persisted
+            await givenReturningSession();
+            await givenInitialSyncSettled();
+            await givenPolicy({role: CONST.POLICY.ROLE.USER, ownerAccountID: OTHER_ACCOUNT_ID, type: CONST.POLICY.TYPE.CORPORATE});
+
+            // When the guard evaluates a navigation action
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then onboarding is skipped, because membership is what the rule is actually about
+            expect(result.type).toBe('ALLOW');
+        });
+
+        it('counts a workspace the account was invited to as an admin of someone else owned workspace', async () => {
+            // Given an invitation as an admin rather than a member, so role alone cannot distinguish it
+            await givenReturningSession();
+            await givenInitialSyncSettled();
+            await givenPolicy({role: CONST.POLICY.ROLE.ADMIN, ownerAccountID: OTHER_ACCOUNT_ID, type: CONST.POLICY.TYPE.CORPORATE});
+
+            // When the guard evaluates a navigation action
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then onboarding is skipped, because the owner is a known other account
+            expect(result.type).toBe('ALLOW');
+        });
+
+        it('does not exempt a workspace that onboarding itself joined', async () => {
+            // Given the flow every simpler fix breaks: the onboarding "join a workspace" step joined a
+            // workspace owned by someone else and recorded it in ONBOARDING_POLICY_ID, then the user
+            // reopened before the name step. The server flag is true for that workspace too, so it can
+            // only be trusted while onboarding has not adopted one.
+            await givenReturningSession();
+            await givenInitialSyncSettled();
+            await Onyx.merge(ONYXKEYS.ONBOARDING_POLICY_ID, INVITED_POLICY_ID);
+            await Onyx.merge(ONYXKEYS.HAS_NON_PERSONAL_POLICY, true);
+            await givenPolicy({role: CONST.POLICY.ROLE.USER, ownerAccountID: OTHER_ACCOUNT_ID, type: CONST.POLICY.TYPE.CORPORATE});
+
+            // When the guard evaluates a navigation action
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then onboarding is still enforced, or this user loses the rest of their flow with
+            // hasCompletedGuidedSetupFlow never set and no way back in
+            expect(result.type).toBe('REDIRECT');
+        });
+
+        it('still redirects the admin and owner of their only workspace', async () => {
+            // Given an OldDot "1-9 employees" signup: the backend creates a group workspace owned and
+            // administered by the signing-up user while onboarding is still pending. Counting any
+            // non-personal policy would skip onboarding for every one of these - the signup in this issue.
+            await givenReturningSession();
+            await givenInitialSyncSettled();
+            await givenPolicy({role: CONST.POLICY.ROLE.ADMIN, ownerAccountID: CURRENT_ACCOUNT_ID, type: CONST.POLICY.TYPE.TEAM});
+
+            // When the guard evaluates a navigation action
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then onboarding is still enforced
+            expect(result.type).toBe('REDIRECT');
+        });
+
+        it('still decides from cache while offline, so a pending sync cannot hold onboarding open forever', async () => {
+            // Given a returning session that is offline, where the first sync will never land
+            await givenReturningSession();
+            await givenInitialSyncPending();
+            await Onyx.merge(ONYXKEYS.NETWORK, {isOffline: true});
+            await waitForBatchedUpdates();
+
+            // When the guard evaluates a navigation action
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then it decides from cache rather than waiting, so a new account still reaches onboarding
+            expect(result.type).toBe('REDIRECT');
+        });
+
+        it('does not wait on a first-run session, where IS_LOADING_APP already covers it', async () => {
+            // Given a first run rather than a reopen: HAS_LOADED_APP has never been set, so this session
+            // sends OpenApp, whose optimistic IS_LOADING_APP already gates both readers
+            await Onyx.merge(ONYXKEYS.NVP_ONBOARDING, {hasCompletedGuidedSetupFlow: false});
+            await Onyx.merge(ONYXKEYS.ACCOUNT, {isFromPublicDomain: true});
+            await waitForBatchedUpdates();
+            await givenInitialSyncPending();
+
+            // When the guard evaluates a navigation action
+            const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
+
+            // Then the wait does not apply, keeping first-run behaviour byte-for-byte unchanged
+            expect(result.type).toBe('REDIRECT');
+        });
+
+        it('still blocks navigating out of an open onboarding flow while syncing', async () => {
+            // Given onboarding already on screen on a returning session whose sync is still pending.
+            // This is the case an unscoped wait would break: the skip list returns ALLOW *before* the
+            // branch that blocks leaving an open flow, so an exitTo, a warm deep link or goBack(HOME)
+            // would escape onboarding for the whole sync window.
+            await givenReturningSession();
+            await givenInitialSyncPending();
+
+            // When an action that leaves the onboarding flow is evaluated while it is focused
+            const result = OnboardingGuard.evaluate(stateWithOnboardingNavigator, mockAction, authenticatedContext);
+
+            // Then it is still blocked, because an open flow keeps control until it finishes
+            expect(result.type).toBe('BLOCK');
         });
     });
 });
