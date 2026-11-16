@@ -326,7 +326,7 @@ const OnboardingGuard: NavigationGuard = {
         // (shouldForceOffline and friends), so NetworkState is the only synchronous source. Read
         // instantaneously it is a known hole - one evaluation that happens to see offline skips the
         // wait - which is why whether this should latch is one of the details to settle in the PR.
-        const isWaitingForInitialSync = context.isAuthenticated && !!hasLoadedApp && !isOnboardingFocused && !getIsOffline() && !isServerDataReady();
+        const isWaitingForInitialSync = context.isAuthenticated && !isOnboardingFocused && !getIsOffline() && !isServerDataReady();
 
         const isNavigatingToJoinWorkspaceTaskRoute = isNavigatingToJoinWorkspaceTask(action);
 
