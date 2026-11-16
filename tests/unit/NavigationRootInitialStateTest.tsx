@@ -112,4 +112,87 @@ describe('NavigationRoot initial state', () => {
         }
         expect(getPathFromState(mockCapturedInitialState)).toBe(getPathFromState(getAdaptedStateFromPath(ROUTES.HOME)));
     });
+
+    describe('abandoned onboarding step (#106926)', () => {
+        // Why these live here: NavigationRoot's `useState` initializer runs once, synchronously, before
+        // OpenApp/ReconnectApp answers, and a restored initial state never passes through OnboardingGuard
+        // (the comment above the initializer, and the copilot case above, both say so). So no membership
+        // check placed in this file can fix #106926 - the only correct behaviour is to not restore an
+        // abandoned onboarding step at all. startOnboardingFlow resumes it from ONBOARDING_LAST_VISITED_PATH.
+        const WORK_EMAIL_PATH = ROUTES.ONBOARDING_WORK_EMAIL.getRoute() as Route;
+        const JOIN_WORKSPACE_TASK_PATH = ROUTES.ONBOARDING_WORK_EMAIL.getRoute(true) as Route;
+        const NO_RESTORE = '/no-restore';
+
+        it('does not restore an abandoned onboarding step when the root URL is reopened', async () => {
+            // Given an account that abandoned onboarding on the public-domain work email step, and was
+            // invited to someone else's workspace while the app was closed. The invite is not knowable
+            // here: a reopen sends ReconnectApp, which does not refresh hasNonPersonalPolicy.
+            await Onyx.set(ONYXKEYS.ACCOUNT, {isFromPublicDomain: true});
+            await Onyx.set(ONYXKEYS.NVP_ONBOARDING, {hasCompletedGuidedSetupFlow: false});
+            await waitForBatchedUpdates();
+
+            // When the app is reopened at the bare root URL, so there is no specific deep link
+            render(
+                <NavigationRoot
+                    authenticated
+                    lastVisitedPath={WORK_EMAIL_PATH}
+                    initialUrl={null}
+                    onReady={() => {}}
+                />,
+            );
+
+            // Then onboarding is not put into the initial state, because an initial state skips
+            // OnboardingGuard and would strand an invited member in a flow they must not be in
+            const restoredPath = mockCapturedInitialState ? getPathFromState(mockCapturedInitialState) : undefined;
+            expect(restoredPath ?? NO_RESTORE).not.toContain(ROUTES.ONBOARDING_ROOT.route);
+        });
+
+        it('still restores a join-workspace task onboarding path', async () => {
+            // Given the same unfinished onboarding, but the saved step is a join-workspace Concierge task
+            // (isJoinWorkspaceTask=true), which is a task the user is meant to return to
+            await Onyx.set(ONYXKEYS.ACCOUNT, {isFromPublicDomain: true});
+            await Onyx.set(ONYXKEYS.NVP_ONBOARDING, {hasCompletedGuidedSetupFlow: false});
+            await waitForBatchedUpdates();
+
+            // When the app is reopened at the bare root URL
+            render(
+                <NavigationRoot
+                    authenticated
+                    lastVisitedPath={JOIN_WORKSPACE_TASK_PATH}
+                    initialUrl={null}
+                    onReady={() => {}}
+                />,
+            );
+
+            // Then it is still restored, so the fix cannot pass by disabling restoration wholesale
+            if (!mockCapturedInitialState) {
+                throw new Error('NavigationRoot did not restore the join-workspace task path');
+            }
+            expect(getPathFromState(mockCapturedInitialState)).toBe(getPathFromState(getAdaptedStateFromPath(JOIN_WORKSPACE_TASK_PATH)));
+        });
+
+        it('still restores a non-onboarding path for an account that has not finished onboarding', async () => {
+            // Given an account that has not finished onboarding but whose saved page is an ordinary screen
+            await Onyx.set(ONYXKEYS.ACCOUNT, {isFromPublicDomain: true});
+            await Onyx.set(ONYXKEYS.NVP_ONBOARDING, {hasCompletedGuidedSetupFlow: false});
+            await waitForBatchedUpdates();
+
+            // When the app is reopened at the bare root URL
+            render(
+                <NavigationRoot
+                    authenticated
+                    lastVisitedPath={DISTANCE_EDIT_ROUTE as Route}
+                    initialUrl={null}
+                    onReady={() => {}}
+                />,
+            );
+
+            // Then it is restored, proving the skip is keyed on the saved path being an onboarding path
+            // and not on onboarding merely being incomplete
+            if (!mockCapturedInitialState) {
+                throw new Error('NavigationRoot did not restore the last visited path');
+            }
+            expect(getPathFromState(mockCapturedInitialState)).toBe(getPathFromState(getAdaptedStateFromPath(DISTANCE_EDIT_ROUTE as Route)));
+        });
+    });
 });
