@@ -132,9 +132,10 @@ Onyx.connectWithoutView({
     },
 });
 
+// A collection root key delivers the whole collection to the callback, so no per-member
+// bookkeeping is needed here.
 Onyx.connectWithoutView({
     key: ONYXKEYS.COLLECTION.POLICY,
-    waitForCollectionCallback: true,
     callback: (value) => {
         policies = value;
     },

@@ -61,3 +61,9 @@ jobs:
             tests/unit/Navigation/guards/handleNavigationGuardBlock.test.ts \
             tests/unit/Navigation/guards/handleNavigationGuardRedirect.test.ts \
             tests/unit/LinkOpenReportFromDeepLinkTest.ts
+
+      # The jest transformer strips types without checking them, so a type error in the patch would
+      # pass the suites above and only surface in CI. This is the repo's own typecheck script.
+      - name: Typecheck
+        if: ${{ always() }}
+        run: npm run typecheck
