@@ -2,6 +2,7 @@ import AccountUtils from '@libs/AccountUtils';
 import {isServerDataReady, setOnboardingErrorMessage} from '@libs/actions/Welcome';
 import Log from '@libs/Log';
 import {isOnboardingFlowName} from '@libs/Navigation/helpers/isNavigatorName';
+import {getIsOffline} from '@libs/NetworkState';
 import {getDeepestFocusedScreen, isTwoFactorSetupScreen} from '@libs/Navigation/Navigation';
 
 import {getOnboardingInitialPath} from '@userActions/Welcome/OnboardingFlow';
@@ -50,7 +51,6 @@ let hasLoadedApp: OnyxEntry<boolean>;
 let onboardingPolicyID: OnyxEntry<string>;
 let policies: OnyxCollection<Policy>;
 let currentUserAccountID: number | undefined;
-let isOffline = false;
 
 Onyx.connectWithoutView({
     key: ONYXKEYS.NVP_ONBOARDING,
@@ -145,16 +145,6 @@ Onyx.connectWithoutView({
     key: ONYXKEYS.SESSION,
     callback: (value) => {
         currentUserAccountID = value?.accountID;
-    },
-});
-
-// Read as a latched value rather than instantaneously: a single render reporting offline - a flap on
-// mobile, or NetworkState before NetInfo reports - would otherwise skip the wait and decide from
-// stale cache, with nothing able to retract it afterwards.
-Onyx.connectWithoutView({
-    key: ONYXKEYS.NETWORK,
-    callback: (value) => {
-        isOffline = value?.isOffline ?? false;
     },
 });
 
@@ -332,7 +322,11 @@ const OnboardingGuard: NavigationGuard = {
         // Never open onboarding from pre-sync cache. On a reopen the invited workspace is already in
         // Onyx while HAS_NON_PERSONAL_POLICY still holds the previous session's false, and there is no
         // way back out once onboarding opens, so a wrong decision here is permanent for that session.
-        const isWaitingForInitialSync = context.isAuthenticated && !!hasLoadedApp && !isOnboardingFocused && !isOffline && !isServerDataReady();
+        // Offline is read here rather than cached: ONYXKEYS.NETWORK holds only the debug toggles
+        // (shouldForceOffline and friends), so NetworkState is the only synchronous source. Read
+        // instantaneously it is a known hole - one evaluation that happens to see offline skips the
+        // wait - which is why whether this should latch is one of the details to settle in the PR.
+        const isWaitingForInitialSync = context.isAuthenticated && !!hasLoadedApp && !isOnboardingFocused && !getIsOffline() && !isServerDataReady();
 
         const isNavigatingToJoinWorkspaceTaskRoute = isNavigatingToJoinWorkspaceTask(action);
 

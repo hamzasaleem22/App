@@ -15,6 +15,17 @@ import Onyx from 'react-native-onyx';
 import waitForBatchedUpdates from '../../../utils/waitForBatchedUpdates';
 
 let mockSkipOnboarding = false;
+// ONYXKEYS.NETWORK holds only the debug toggles, so offline state is not in Onyx at all -
+// NetworkState is the synchronous source the guard reads.
+let mockIsOffline = false;
+
+jest.mock('@libs/NetworkState', () => {
+    const actualNetworkState = jest.requireActual<typeof import('@libs/NetworkState')>('@libs/NetworkState');
+    return {
+        ...actualNetworkState,
+        getIsOffline: () => mockIsOffline,
+    };
+});
 
 jest.mock('@src/CONFIG', () => {
     const actualConfig = jest.requireActual<{default: Record<string, unknown>}>('@src/CONFIG').default;
@@ -91,6 +102,7 @@ describe('OnboardingGuard', () => {
 
     beforeEach(async () => {
         mockSkipOnboarding = false;
+        mockIsOffline = false;
         await Onyx.clear();
         await waitForBatchedUpdates();
     });
@@ -1224,8 +1236,7 @@ describe('OnboardingGuard', () => {
             // Given a returning session that is offline, where the first sync will never land
             await givenReturningSession();
             await givenInitialSyncPending();
-            await Onyx.merge(ONYXKEYS.NETWORK, {isOffline: true});
-            await waitForBatchedUpdates();
+            mockIsOffline = true;
 
             // When the guard evaluates a navigation action
             const result = OnboardingGuard.evaluate(mockState, mockAction, authenticatedContext);
